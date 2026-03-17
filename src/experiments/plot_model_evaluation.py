@@ -65,9 +65,9 @@ def plot_model_evaluation(
     mare = mare_fn(y_hat, y, epsilon=0.001)
 
     ax1.errorbar(
-        y[:,0], 
-        y_hat[:,0], 
-        yerr=y[:, 1], 
+        y[:,0].cpu().numpy(), 
+        y_hat[:,0].cpu().numpy(), 
+        yerr=y[:, 1].cpu().numpy(), 
         fmt="o",
         markerfacecolor="none", 
         color="black",
@@ -77,34 +77,34 @@ def plot_model_evaluation(
         alpha=0.5, 
     )
     ax1.plot(
-        torch.stack([torch.min(y[:,0]), torch.max(y[:,0])]),
-        torch.stack([torch.min(y_hat[:,0]), torch.max(y_hat[:,0])]),
+        torch.stack([torch.min(y[:,0]), torch.max(y[:,0])]).cpu().numpy(),
+        torch.stack([torch.min(y_hat[:,0]), torch.max(y_hat[:,0])]).cpu().numpy(),
         "red", 
         alpha=0.5
     )
     
-    ax1.set_title(f"Price\nMA(R)E={mare[0].item():.2f} | (R)MSE={rmse[0].item():.2f}")
+    ax1.set_title(f"Price\nMA(R)E={mare[0].item():.5f} | (R)MSE={rmse[0].item():.5f}")
     ax1.set_xlabel(f"MC")
     ax1.set_ylabel(f"Model")
     ax1.grid(True, linestyle=":", alpha=0.5)
     ax1.legend()
 
     ax2.scatter(
-        y[:, 1], 
-        y_hat[:, 1], 
+        y[:, 1].cpu().numpy(), 
+        y_hat[:, 1].cpu().numpy(), 
         s=36,
         facecolors="none",
         edgecolors="black",
         alpha=0.5, 
     )
     ax2.plot(
-        torch.stack([torch.min(y[:,1]), torch.max(y[:,1])]),
-        torch.stack([torch.min(y_hat[:,1]), torch.max(y_hat[:,1])]),
+        torch.stack([torch.min(y[:,1]), torch.max(y[:,1])]).cpu().numpy(),
+        torch.stack([torch.min(y_hat[:,1]), torch.max(y_hat[:,1])]).cpu().numpy(),
         "red", 
         alpha=0.5
     )
     
-    ax2.set_title(f"CI\nMA(R)E={mare[1].item():.2f} | (R)MSE={rmse[1].item():.2f}")
+    ax2.set_title(f"CI\nMA(R)E={mare[1].item():.5f} | (R)MSE={rmse[1].item():.5f}")
     ax2.set_xlabel(f"MC")
     ax2.set_ylabel(f"Model")
     ax2.grid(True, linestyle=":", alpha=0.5)

@@ -1,7 +1,12 @@
+from typing import (
+    Optional
+)
+
 import ctypes
 import torch
 import warnings
 import math
+import os
 
 class CudaRNGStructure(ctypes.Structure):
     _fields_ = [
@@ -51,50 +56,102 @@ def cuda_gamma(n: int, a: float, random_state: CudaRNG):
 
     return x
 
-def cuda_vg_pricing(
-    T: float,
-    K: float,
-    sigma: float,
-    theta: float,
-    kappa: float,
+def cuda_batched_vg_pricing(
+    T: torch.Tensor,
+    K: torch.Tensor,
+    sigma: torch.Tensor,
+    theta: torch.Tensor,
+    kappa: torch.Tensor,
     mc_steps: int,
-    random_state: CudaRNG
+    random_state: CudaRNG,
+    buffer: Optional[torch.Tensor] = None
 ):
-    if not hasattr(random_state.lib.cuda_vg_pricing, "argtypes"):
-        random_state.lib.cuda_vg_pricing.argtypes = [
+    if not hasattr(random_state.lib.cuda_batched_vg_pricing, "argtypes"):
+        random_state.lib.cuda_batched_vg_pricing.argtypes = [
             ctypes.POINTER(ctypes.c_float),
-            ctypes.c_float,
-            ctypes.c_float,
-            ctypes.c_float,
-            ctypes.c_float,
-            ctypes.c_float,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int,
             ctypes.c_int,
             ctypes.POINTER(CudaRNGStructure), 
         ]
-        random_state.lib.cuda_vg_pricing.restype = None
+        random_state.lib.cuda_batched_vg_pricing.restype = None
 
-    if random_state.n < mc_steps:
+    def safe_tensor(t: torch.Tensor, raise_error: bool = False) -> torch.Tensor:
+        if not t.is_cuda:
+            message = "Tensor is not on device memory"
+
+            if raise_error: raise RuntimeError(message)
+            else: 
+                warnings.warn(message, RuntimeWarning)
+                t = t.to("cuda")
+
+        if t.dtype != torch.float32:
+            message = "Tensor is not float32"
+
+            if raise_error: raise RuntimeError(message)
+            else: 
+                warnings.warn(message, RuntimeWarning)
+                t = t.to(torch.float32)
+
+        if not t.is_contiguous():
+            message = "Tensor is not contiguous"
+
+            if raise_error: raise RuntimeError(message)
+            else: 
+                warnings.warn(message, RuntimeWarning)
+                t = t.contiguous()
+
+        return t
+
+    batch_size = len(T)
+
+    if random_state.n < (mc_steps * batch_size):
         raise ValueError("Not enough memory allocated to CudaRNG")
     
-    if (T / kappa) < 0.002572:
+    if torch.any((T / kappa) < 0.002572):
         warnings.warn(
-            f"Ratio T / \\kappa ={T / kappa} is below safe threshold for Johnk's Gamma sampling method.",
+            f"Ratio T / \\kappa is below safe threshold (0.002572) for Johnk's Gamma sampling method.",
             RuntimeWarning
         )
-    
 
-    x_mc = torch.empty(mc_steps, device="cuda", dtype=torch.float32)
-    x_mc_ptr = ctypes.cast(x_mc.data_ptr(), ctypes.POINTER(ctypes.c_float))
+    if buffer is None:
+        buffer = torch.empty((batch_size, mc_steps), device="cuda", dtype=torch.float32)
 
-    random_state.lib.cuda_vg_pricing(
-        x_mc_ptr,
-        ctypes.c_float(T),
-        ctypes.c_float(K),
-        ctypes.c_float(sigma),
-        ctypes.c_float(theta),
-        ctypes.c_float(kappa),
+    random_state.lib.cuda_batched_vg_pricing(
+        ctypes.cast(safe_tensor(buffer, raise_error=True).data_ptr(), ctypes.POINTER(ctypes.c_float)),
+        ctypes.cast(safe_tensor(T).data_ptr(), ctypes.POINTER(ctypes.c_float)),
+        ctypes.cast(safe_tensor(K).data_ptr(), ctypes.POINTER(ctypes.c_float)),
+        ctypes.cast(safe_tensor(sigma).data_ptr(), ctypes.POINTER(ctypes.c_float)),
+        ctypes.cast(safe_tensor(theta).data_ptr(), ctypes.POINTER(ctypes.c_float)),
+        ctypes.cast(safe_tensor(kappa).data_ptr(), ctypes.POINTER(ctypes.c_float)),
+        ctypes.c_int(batch_size),
         ctypes.c_int(mc_steps),
         random_state.handle
     )
 
-    return torch.mean(x_mc).item(), (torch.std(x_mc) / math.sqrt(len(x_mc))).item()
+    return torch.cat([
+        torch.mean(buffer, dim=1, keepdim=True),
+        torch.std(buffer, dim=1, keepdim=True) / math.sqrt(mc_steps),
+    ], dim=1)
+
+
+def test_rng():
+    rng = CudaRNG(os.path.join(os.path.dirname(__file__), "vg.so"), 0, 16)
+
+    params = dict(
+        T=torch.tensor([1.], dtype=torch.float32, device="cuda"),
+        K=torch.tensor([1.], dtype=torch.float32, device="cuda"),
+        sigma=torch.tensor([0.2], dtype=torch.float32, device="cuda"),
+        theta=torch.tensor([-0.1], dtype=torch.float32, device="cuda"),
+        kappa=torch.tensor([1.], dtype=torch.float32, device="cuda"),
+    )
+
+    print(cuda_batched_vg_pricing(**params, mc_steps=16, random_state=rng))
+    print(cuda_batched_vg_pricing(**params, mc_steps=16, random_state=rng))
+
+if __name__ == "__main__":
+    test_rng()

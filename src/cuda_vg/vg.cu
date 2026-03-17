@@ -18,23 +18,43 @@ namespace device {
 
 }
 
-__global__ void vg_pricing_kernel(
-    float *x_mc,
-    int n_mc,
-    float T,
-    float K,
-    float sigma,
-    float theta,
-    float kappa,
-    float omega,
-    curandState *state
+__global__ void _batched_vg_pricing_martingale_constant_kernel(
+    float *omega,
+    float *sigma,
+    float *theta,
+    float *kappa,
+    int n
 ) {
     int id = threadIdx.x + blockIdx.x * blockDim.x;
-    if (id >= n_mc) return;
+    if (id >= n) return;
 
-    x_mc[id] = device::vg(T, sigma, theta, kappa, &state[id]);
-    x_mc[id] = expf(omega * T + x_mc[id]);
-    x_mc[id] = x_mc[id] - K;
+    omega[id] = logf(1.0f - theta[id] * kappa[id] - kappa[id] * sigma[id] * sigma[id] / 2.0f) / kappa[id];
+}
+
+__global__ void batched_vg_pricing_kernel(
+    float *x_mc,
+    float *T,
+    float *K,
+    float *sigma,
+    float *theta,
+    float *kappa,
+    float *omega,
+    int mc_steps,
+    int batch_size,
+    curandState *state
+) {
+    // Swapped for efficiency
+    int sample_id = threadIdx.x + blockIdx.x * blockDim.x;
+    int batch_id = threadIdx.y + blockIdx.y * blockDim.y;
+
+    if (sample_id >= mc_steps) return;
+    if (batch_id >= batch_size) return;
+
+    int id = batch_id * mc_steps + sample_id;
+
+    x_mc[id] = device::vg(T[batch_id], sigma[batch_id], theta[batch_id], kappa[batch_id], &state[id]);
+    x_mc[id] = expf(omega[batch_id] * T[batch_id] + x_mc[id]);
+    x_mc[id] = x_mc[id] - K[batch_id];
     x_mc[id] = fmaxf(x_mc[id], 0.0f);
 }
 
@@ -42,53 +62,46 @@ __global__ void vg_pricing_kernel(
 extern "C" {
 #endif
 
-    void cuda_vg_pricing(
+    void cuda_batched_vg_pricing(
         float *x_mc,
-        float T,
-        float K,
-        float sigma,
-        float theta,
-        float kappa,
+        float *T,
+        float *K,
+        float *sigma,
+        float *theta,
+        float *kappa,
+        int batch_size,
         int mc_steps,
         CudaRNG* state
     ) {
-        if (mc_steps > state->n) return;
+        if (mc_steps * batch_size > state->n) return;
 
-        // float* x_mc;
-        // CUDA_CHECK(cudaMalloc((void**)&x_mc, mc_steps * sizeof(float)));
+        float* omega;
+        CUDA_CHECK(cudaMalloc((void**)&omega, batch_size * sizeof(float)));
 
-        float omega = logf(1.0f - theta * kappa - kappa * sigma * sigma / 2.0f) / kappa;
+        int tpb_omega = 256;
+        int blocks_omega = (batch_size + tpb_omega - 1) / tpb_omega;
 
-        int threadsPerBlock = 256;
-        int blocks = (mc_steps + threadsPerBlock - 1) / threadsPerBlock;
+        _batched_vg_pricing_martingale_constant_kernel<<<blocks_omega, tpb_omega>>>(omega, sigma, theta, kappa, batch_size);
 
-        vg_pricing_kernel<<<blocks, threadsPerBlock>>>(x_mc, mc_steps, T, K, sigma, theta, kappa, omega, state->states);
-        // CUDA_CHECK(cudaDeviceSynchronize());
+        dim3 threadsPerBlock;
+        threadsPerBlock.x = 32;
+        threadsPerBlock.y = 8;
+        threadsPerBlock.z = 1;
 
-        // float x_hat_online = 0.f;
-        // float x_hat_std_online = 0.f;
+        dim3 blocks;
+        blocks.x = (batch_size + threadsPerBlock.x - 1) / threadsPerBlock.x;
+        blocks.y = (mc_steps + threadsPerBlock.y - 1) / threadsPerBlock.y;
+        blocks.z = 1;
 
-        // for (int i = 0; i < mc_steps; i++) {
-        //     float x_i = x_mc[i];
-        //     float prev_x_hat_online = x_hat_online;
-        //     x_hat_online = ((float)i * x_hat_online + x_i) / (float)(i + 1);
-        //     x_hat_std_online += (x_i - prev_x_hat_online) * (x_i - x_hat_online);
-        // }
+        batched_vg_pricing_kernel<<<blocks, threadsPerBlock>>>(x_mc, T, K, sigma, theta, kappa, omega, mc_steps, batch_size, state->states);
 
-        // *x_hat = x_hat_online;
-
-        // if (mc_steps >= 2) {
-        //     *x_hat_ic = sqrtf(x_hat_std_online / (float)((mc_steps - 1) * mc_steps));
-        // } else {
-        //     *x_hat_ic = 0.0f;
-        // }
-
-        // CUDA_CHECK(cudaFree(x_mc));
+        CUDA_CHECK(cudaFree(omega));
 
         CUDA_CHECK(cudaPeekAtLastError());
         #ifdef DEBUG
             CUDA_CHECK(cudaDeviceSynchronize());
         #endif
+
     }
 
 #ifdef __cplusplus

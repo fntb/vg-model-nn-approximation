@@ -82,15 +82,15 @@ def main():
     batch_size = 256
     epoch_size = 20
     max_epoch = 200
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = "cuda"
 
-    mc_steps = 10_000
+    mc_steps = 32_768
     param_priors = {
-        "T": lambda size: np.random.uniform(low=0.1, high=2.0, size=size),
-        "K": lambda size: np.full(size, 1.), # np.random.normal(loc=1, scale=0.001, size=size)
-        "sigma": lambda size: np.random.uniform(low=0.05, high=0.6, size=size),
-        "theta": lambda size: np.clip(np.random.normal(loc=-0.1, size=size), a_min=-0.5, a_max=0.2),
-        "kappa": lambda size: np.exp(np.random.uniform(low=0.1, high=2.0, size=size)),
+        "T": lambda size: torch.empty((size,), device=device).uniform_(0.1, 2.0),
+        "K": lambda size: torch.full((size,), 1., device=device), # np.random.normal(loc=1, scale=0.001, size=size)
+        "sigma": lambda size: torch.empty((size,), device=device).uniform_(0.05, 0.6),
+        "theta": lambda size: torch.normal(mean=-0.1, std=1.0, size=(size,), device=device).clamp_(-0.5, 0.2),
+        "kappa": lambda size: torch.empty((size,), device=device).uniform_(0.1, 2.0).exp_(),
     }
 
     set_seed(seed)

@@ -65,15 +65,14 @@ For instance given the gamma process used in the VG model, we knew we'd encounte
 
 ## Results
 
-```
-Model: ResidualMLP
+```Model: ResidualMLP
 Learnable parameters : 16098
-Hit max epoch: 200                                                                                                                                                                           
-Loss : 0.43920 (train) | 0.14286 (val) | 0.14038 (test)
-Prior sampling time : 0.25s (0.00000022s/sample)
-VG sampling time    : 121.17s (0.00010755s/sample)
-MC sampling time    : 0.00028258s/sample
-Model sampling time : 0.00002479s/sample
+Hit max epoch : 200                                                                                                                                                                           
+Loss : 0.12893 (train) | 0.12825 (val) | 0.10875 (test)
+Prior sampling time : 0.68s (0.00000060s/sample)
+VG sampling time    : 2.43s (0.00000215s/sample)
+MC sampling time    : 0.00000654s/sample
+Model sampling time : 0.00002898s/sample
 ```
 
 ![Learning Curves](./learning_curves.png)
