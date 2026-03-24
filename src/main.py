@@ -118,7 +118,7 @@ def main():
         (ThresholdedWeightedMSE(precision=1e-8), 1.),
         (MonotonyLoss(1, increasing=False), 1.),
         (MonotonyLoss(0, increasing=True), 1.),
-        (ConvexityLoss(0, convex=True), 1.),
+        (ConvexityLoss(1, convex=True), 1.),
     ])
 
     # model = Linear(bias=False, device=device)
@@ -129,7 +129,7 @@ def main():
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=10e-4,
+        lr=5e-4,
         weight_decay=1e-4,
         betas=(0.9, 0.999),
     )
@@ -137,7 +137,7 @@ def main():
     scheduler = None
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
          optimizer,
-         max_lr=10e-3, 
+         max_lr=5e-3, 
          steps_per_epoch=1,
          epochs=max_epoch,
          pct_start=0.3,
