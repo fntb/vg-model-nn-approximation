@@ -1,47 +1,28 @@
 import torch
 from torch import nn
-from torch.nn.utils.parametrizations import spectral_norm
 
-class ResidualMLP(nn.Module):
+class Linear(nn.Linear):
+    def __init__(self, bias: bool = True, device = None, dtype = None) -> None:
+        super().__init__(5, 1, bias=bias, device=device, dtype=dtype)
+    
+class MLP(nn.Module):
     def __init__(
         self,
         hidden_dim: int = 32,
-        depth: int = 5,
-        dropout: float = 0.,
+        depth: int = 3,
+        device = None,
+        dtype = None
     ) -> None:
         super().__init__()
 
-        self.encoder = nn.Linear(5, hidden_dim)
-
-        self.layers = nn.ModuleList([
-            nn.Sequential(
-                nn.Dropout(dropout),
-                spectral_norm(nn.Linear(hidden_dim, hidden_dim)),
-                nn.GELU(),
-                spectral_norm(nn.Linear(hidden_dim, hidden_dim)),
-                nn.GELU(),
-                spectral_norm(nn.Linear(hidden_dim, hidden_dim)),
-            ) for _ in range(depth)
-        ])
-
-        self.decoder = nn.Sequential(
-            nn.Linear(hidden_dim, 2),
-        )
-
-    def log_forward(self, x: torch.Tensor):
-
-        x = self.encoder(x)
-
-        for layer in self.layers:
-            x = layer(x) + x
-
-        y = self.decoder(x)
-
-        return y
+        self.in_layer = nn.Linear(5, hidden_dim, device=device, dtype=dtype)
+        self.hid_layers = nn.ModuleList([nn.Linear(hidden_dim, hidden_dim, device=device, dtype=dtype) for _ in range(depth - 2)])
+        self.out_layer = nn.Linear(hidden_dim, 1, device=device, dtype=dtype)
 
     def forward(self, x: torch.Tensor):
-        y = self.log_forward(x)
-        y = torch.exp(y)
+        x = nn.functional.gelu(self.in_layer(x))
 
-        return y
-    
+        for layer in self.hid_layers:
+            x = nn.functional.gelu(layer(x))
+        
+        return self.out_layer(x)

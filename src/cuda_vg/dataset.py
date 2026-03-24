@@ -12,7 +12,7 @@ import time
 import torch
 import numpy as np
 
-from .bindings import (
+from src.cuda_vg.bindings import (
     CudaRNG,
     cuda_batched_vg_pricing
 )
@@ -56,7 +56,7 @@ class VGPricingDataset(torch.utils.data.IterableDataset):
         self.samples_buffer = torch.empty((self.queue_size, mc_steps), dtype=torch.float32, device="cuda")
 
         self.params_queues: List[torch.Tensor]
-        self.samples_queue: torch.Tensor
+        self.samples_queue: List[torch.Tensor]
 
     @property
     def parameter_labels(self):
@@ -83,7 +83,7 @@ class VGPricingDataset(torch.utils.data.IterableDataset):
 
             time_vg_sampling = time.time()
 
-            y = cuda_batched_vg_pricing(
+            y, ic = cuda_batched_vg_pricing(
                 T=self.params_queues[0], 
                 K=self.params_queues[1], 
                 sigma=self.params_queues[2], 
@@ -94,15 +94,44 @@ class VGPricingDataset(torch.utils.data.IterableDataset):
                 buffer=self.samples_buffer
             )
 
-            self.samples_queue = y
+            self.samples_queue = [y, ic]
 
             self.time_vg_sampling += time.time() - time_vg_sampling
 
             self.queue_idx = 0
 
         x = torch.tensor([param_queue[self.queue_idx] for param_queue in self.params_queues], device="cuda")
-        y = self.samples_queue[self.queue_idx]
+        y = self.samples_queue[0][self.queue_idx]
+        ic = self.samples_queue[1][self.queue_idx]
 
         self.queue_idx += 1
 
-        return x, y
+        return x, y.unsqueeze_(0), ic.unsqueeze_(0)
+
+
+if __name__ == "__main__":
+    import os
+    import csv
+
+    device = "cuda"
+    mc_steps = 32_768
+
+    param_priors = {
+        "T": lambda size: torch.empty((size,), device=device).uniform_(0.1, 2.0),
+        "K": lambda size: torch.full((size,), 1., device=device), # np.random.normal(loc=1, scale=0.001, size=size)
+        "sigma": lambda size: torch.empty((size,), device=device).uniform_(0.05, 0.6),
+        "theta": lambda size: torch.normal(mean=-0.1, std=1.0, size=(size,), device=device).clamp_(-0.5, 0.2),
+        "kappa": lambda size: torch.empty((size,), device=device).uniform_(0.1, 2.0).exp_(),
+    }
+
+
+    dataset = VGPricingDataset(**param_priors, mc_steps=mc_steps)
+
+    os.makedirs(".cache", exist_ok=True)
+    with open(os.path.join(".cache", "dataset.csv"), "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["T", "K", "sigma", "theta", "kappa", "price", "ic"])
+
+            for _ in range(1000):
+                x, y, ic = next(dataset)
+                writer.writerow(torch.cat([x, y, ic]).tolist())

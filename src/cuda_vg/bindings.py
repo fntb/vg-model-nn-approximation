@@ -179,11 +179,7 @@ def cuda_batched_vg_pricing(
         random_state.handle
     )
 
-    return torch.cat([
-        torch.mean(buffer, dim=1, keepdim=True),
-        torch.std(buffer, dim=1, keepdim=True) / math.sqrt(mc_steps),
-    ], dim=1)
-
+    return torch.mean(buffer, dim=1), torch.var(buffer, dim=1) / mc_steps
 
 def test_rng():
     rng = CudaRNG(os.path.join(os.path.dirname(__file__), "vg.so"), 0, 16)

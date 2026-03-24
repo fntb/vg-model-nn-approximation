@@ -5,7 +5,7 @@ import numpy as np
 
 from cuda_vg import VGPricingDataset
 
-def mare_fn(y_hat: torch.Tensor, y: torch.Tensor, epsilon=1e-3):
+def mare_fn(y_hat: torch.Tensor, y: torch.Tensor, epsilon=1e-4):
     diff = torch.abs(y_hat - y)
     ares = torch.where(diff < epsilon, 0., diff / torch.clamp(y, min=epsilon))
     return torch.mean(ares, dim=0)
@@ -24,8 +24,7 @@ def plot_model_evaluation(
     fig = plt.figure(figsize=(12, 6))
     gs = gridspec.GridSpec(2, 10)
 
-    ax1 = fig.add_subplot(gs[0, 0:5])
-    ax2 = fig.add_subplot(gs[0, 5:10])
+    ax = fig.add_subplot(gs[0, 0:10])
 
     axes_delta = [
         fig.add_subplot(gs[1, 0:2]),
@@ -37,18 +36,21 @@ def plot_model_evaluation(
 
     x_queue = []
     y_queue = []
+    ic_queue = []
 
     time_cuda_vg_sampling = dataset.time_vg_sampling
 
     for _ in range(n):
-        x, y = next(dataset)
+        x, y, ic = next(dataset)
         x_queue.append(x)
         y_queue.append(y)
+        ic_queue.append(ic)
 
     time_cuda_vg_sampling = dataset.time_vg_sampling - time_cuda_vg_sampling
 
     x = torch.stack(x_queue)
     y = torch.stack(y_queue)
+    ic = torch.stack(ic_queue)
 
     time_model_vg_sampling = time.time()
 
@@ -61,13 +63,13 @@ def plot_model_evaluation(
     print(f"MC sampling time    : {time_cuda_vg_sampling/n:.8f}s/sample")
     print(f"Model sampling time : {time_model_vg_sampling/n:.8f}s/sample")
 
-    rmse = torch.sqrt(torch.mean((y_hat - y) ** 2, dim=0))
+    rmse = torch.mean((y_hat - y) ** 2, dim=0)
     mare = mare_fn(y_hat, y, epsilon=0.001)
 
-    ax1.errorbar(
-        y[:,0].cpu().numpy(), 
-        y_hat[:,0].cpu().numpy(), 
-        yerr=y[:, 1].cpu().numpy(), 
+    ax.errorbar(
+        y.cpu().numpy().flatten(), 
+        y_hat.cpu().numpy().flatten(),  
+        yerr=1.98 * ic.cpu().numpy().flatten(), 
         fmt="o",
         markerfacecolor="none", 
         color="black",
@@ -76,38 +78,18 @@ def plot_model_evaluation(
         label="MC CI",
         alpha=0.5, 
     )
-    ax1.plot(
-        torch.stack([torch.min(y[:,0]), torch.max(y[:,0])]).cpu().numpy(),
-        torch.stack([torch.min(y_hat[:,0]), torch.max(y_hat[:,0])]).cpu().numpy(),
+    ax.plot(
+        torch.stack([torch.min(y), torch.max(y)]).cpu().numpy(),
+        torch.stack([torch.min(y_hat), torch.max(y_hat)]).cpu().numpy(),
         "red", 
         alpha=0.5
     )
     
-    ax1.set_title(f"Price\nMA(R)E={mare[0].item():.5f} | (R)MSE={rmse[0].item():.5f}")
-    ax1.set_xlabel(f"MC")
-    ax1.set_ylabel(f"Model")
-    ax1.grid(True, linestyle=":", alpha=0.5)
-    ax1.legend()
-
-    ax2.scatter(
-        y[:, 1].cpu().numpy(), 
-        y_hat[:, 1].cpu().numpy(), 
-        s=36,
-        facecolors="none",
-        edgecolors="black",
-        alpha=0.5, 
-    )
-    ax2.plot(
-        torch.stack([torch.min(y[:,1]), torch.max(y[:,1])]).cpu().numpy(),
-        torch.stack([torch.min(y_hat[:,1]), torch.max(y_hat[:,1])]).cpu().numpy(),
-        "red", 
-        alpha=0.5
-    )
-    
-    ax2.set_title(f"CI\nMA(R)E={mare[1].item():.5f} | (R)MSE={rmse[1].item():.5f}")
-    ax2.set_xlabel(f"MC")
-    ax2.set_ylabel(f"Model")
-    ax2.grid(True, linestyle=":", alpha=0.5)
+    ax.set_title(f"Price\nMARE={mare[0].item():.5f} | MSE={rmse[0].item():.5f}")
+    ax.set_xlabel(f"MC")
+    ax.set_ylabel(f"Model")
+    ax.grid(True, linestyle=":", alpha=0.5)
+    ax.legend()
 
     base_x = torch.tensor(parameter_values, dtype=torch.float32, device=next(model.parameters()).device).unsqueeze(0)
 

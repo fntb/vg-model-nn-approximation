@@ -84,15 +84,17 @@ uv run src/main.py
 ```
 
 ```Model: ResidualMLP
-Model: ResidualMLP
-Learnable parameters : 16098
-Early stopping at epoch : 198                                                                                                                                                                 
-Loss : 0.15807 (train) | 0.18334 (val) | 0.17054 (test)
-Prior sampling time : 0.42s (0.00000038s/sample)
-VG sampling time    : 65.57s (0.00005878s/sample)
-MC sampling time    : 0.00015023s/sample
-Model sampling time : 0.00001355s/sample
+Model: MLP
+Learnable parameters : 8769
+Early stopping at epoch : 357                         
+Loss : 12.38083 (train) | 11.32243 (val) | 11.52199 (test)
+Prior sampling time : 0.48s (0.00000024s/sample)
+VG sampling time    : 117.89s (0.00005863s/sample)
+MC sampling time    : 0.00005921s/sample
+Model sampling time : 0.00000028s/sample
 ```
+
+See [notes_on_loss.md](./notes_on_loss.md) for an explanation on these loss values. _We use gradient clipping to keep the training relatively stable._
 
 ![Learning Curves](./learning_curves.png)
 

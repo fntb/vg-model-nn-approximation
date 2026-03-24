@@ -10,8 +10,8 @@ import numpy as np
 from tqdm import tqdm
 
 from cuda_vg import VGPricingDataset
-from metrics import Loss
-from models import ResidualMLP
+from metrics import ThresholdedWeightedMSE, MonotonyLoss, ConvexityLoss, CombinedLoss
+from models import Linear, MLP
 from experiments import plot_model_evaluation, plot_learning_curves
 
 def set_seed(seed):
@@ -24,26 +24,18 @@ def set_seed(seed):
 
 def evaluate(
     model: torch.nn.Module,
-    loss_fn: torch.nn.Module,
+    loss_fn: CombinedLoss,
     loader: torch.utils.data.DataLoader,
     device: Optional[torch.device] = None,
 ):
     model.eval()
     
-    with torch.no_grad():
-        x, y = next(iter(loader))
+    x, y, ic = next(iter(loader))
+    x, y, ic = x.to(device), y.to(device), ic.to(device)
+    x.requires_grad_()
 
-        x, y = x.to(device), y.to(device)
-
-        if hasattr(model, "log_forward"):
-            y_hat = model.log_forward(x)
-        else:
-            y_hat = model(x)
-
-        if hasattr(loss_fn, "log_forward"):
-            loss = loss_fn.log_forward(y_hat, y)
-        else:
-            loss = loss_fn(y_hat, y)
+    y_hat = model(x)
+    loss = loss_fn(x, y_hat, y, ic)
 
     return loss.item()
 
@@ -81,16 +73,24 @@ def main():
     seed = 1
     batch_size = 256
     epoch_size = 20
-    max_epoch = 200
+    max_epoch = 400
     device = "cuda"
 
     mc_steps = 32_768
+    # param_priors = {
+    #     "T": lambda size: torch.empty((size,), device=device).uniform_(0.1, 2.0),
+    #     "K": lambda size: torch.full((size,), 1., device=device), # np.random.normal(loc=1, scale=0.001, size=size)
+    #     "sigma": lambda size: torch.empty((size,), device=device).uniform_(0.05, 0.6),
+    #     "theta": lambda size: torch.normal(mean=-0.1, std=1.0, size=(size,), device=device).clamp_(-0.5, 0.2),
+    #     "kappa": lambda size: torch.empty((size,), device=device).uniform_(0.1, 2.0).exp_(),
+    # }
+
     param_priors = {
         "T": lambda size: torch.empty((size,), device=device).uniform_(0.1, 2.0),
-        "K": lambda size: torch.full((size,), 1., device=device), # np.random.normal(loc=1, scale=0.001, size=size)
+        "K": lambda size: torch.empty((size,), device=device).uniform_(0.8, 1.2), 
         "sigma": lambda size: torch.empty((size,), device=device).uniform_(0.05, 0.6),
-        "theta": lambda size: torch.normal(mean=-0.1, std=1.0, size=(size,), device=device).clamp_(-0.5, 0.2),
-        "kappa": lambda size: torch.empty((size,), device=device).uniform_(0.1, 2.0).exp_(),
+        "theta": lambda size: torch.empty((size,), device=device).uniform_(-0.5, 0.05), 
+        "kappa": lambda size: torch.empty((size,), device=device).uniform_(0.1, 1.0), 
     }
 
     set_seed(seed)
@@ -98,29 +98,51 @@ def main():
     dataset = VGPricingDataset(**param_priors, mc_steps=mc_steps)
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)
 
-    loss_fn = Loss().to(device)
-    # model = torch.nn.Linear(5, 2, bias=False).to(device)
-    model = ResidualMLP().to(device)
+    # ThresholdedWeightedMSE uses our MLE derived weighted MSE,
+    # it will easily reach +1e5 in early epochs, so gradient clipping
+    # is quite mandatory, see the training loop.
+    # It is mathematically sound however, and if minimized long enough,
+    # leads to a very good MARE. 
+    #
+    # TODO : Write a clean .md
+
+    # loss_fn = CombinedLoss([(torch.nn.MSELoss(), 1.)])
+    # loss_fn = CombinedLoss([(ThresholdedWeightedMSE(1e-8), 1.)])
+    # loss_fn = CombinedLoss([
+    #     (torch.nn.MSELoss(), 1.),
+    #     (MonotonyLoss(1, increasing=False), 1.),
+    #     (MonotonyLoss(0, increasing=True), 1.),
+    #     (ConvexityLoss(0, convex=True), 1.),
+    # ])
+    loss_fn = CombinedLoss([
+        (ThresholdedWeightedMSE(precision=1e-8), 1.),
+        (MonotonyLoss(1, increasing=False), 1.),
+        (MonotonyLoss(0, increasing=True), 1.),
+        (ConvexityLoss(0, convex=True), 1.),
+    ])
+
+    # model = Linear(bias=False, device=device)
+    model = MLP(hidden_dim=64, depth=4, device=device)
 
     print(f"Model: {model.__class__.__name__}")
     print(f"Learnable parameters : {sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)}")
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=5e-4,
-        weight_decay=1e-3,
-        betas=(0.95, 0.99995), # Look back much further in the gradient history
+        lr=10e-4,
+        weight_decay=1e-4,
+        betas=(0.9, 0.999),
     )
 
     scheduler = None
-    # scheduler = torch.optim.lr_scheduler.OneCycleLR(
-    #     optimizer,
-    #     max_lr=1e-2, 
-    #     steps_per_epoch=1,
-    #     epochs=max_epoch,
-    #     pct_start=0.1,
-    #     anneal_strategy='cos'
-    # )
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+         optimizer,
+         max_lr=10e-3, 
+         steps_per_epoch=1,
+         epochs=max_epoch,
+         pct_start=0.3,
+         anneal_strategy="cos"
+     )
 
     early_stopping = EarlyStopping(
         patience=50,
@@ -137,52 +159,33 @@ def main():
     while epoch < max_epoch:
         epoch += 1
 
-        y_hat_batches = []
-        y_batches = []
+        epoch_train_losses = []
 
         model.train()
-        for batch, (x, y) in enumerate(tqdm(loader, total=epoch_size, desc=f"Epoch {epoch}", postfix={
+        for batch, (x, y, ic) in enumerate(tqdm(loader, total=epoch_size, desc=f"Epoch {epoch}", postfix={
             "train_loss": train_losses[-1] if train_losses else "?" ,
             "val_loss": val_losses[-1] if val_losses else "?" ,
         }, leave=False)):
             if batch >= epoch_size:
                 break
 
-            x, y = x.to(device), y.to(device)
+            x, y, ic = x.to(device), y.to(device), ic.to(device)
+        
+            x.requires_grad_()
 
             optimizer.zero_grad()
 
-            if hasattr(model, "log_forward"):
-                y_hat = model.log_forward(x)
-            else:
-                y_hat = model(x)
-
-            if hasattr(loss_fn, "log_forward"):
-                loss = loss_fn.log_forward(y_hat, y)
-            else:
-                loss = loss_fn(y_hat, y)
-
+            y_hat = model(x)
+            loss = loss_fn(x, y_hat, y, ic)
             loss.backward()
 
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=.5)
-            
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
+
             optimizer.step()
 
-            y_hat_batches.append(y_hat)
-            y_batches.append(y)
+            epoch_train_losses.append(loss.item())
 
-        model.eval()
-        with torch.no_grad():
-            y_hat = torch.cat(y_hat_batches, dim=0)
-            y = torch.cat(y_batches, dim=0)
-
-            if hasattr(loss_fn, "log_forward"):
-                loss = loss_fn.log_forward(y_hat, y)
-            else:
-                loss = loss_fn(y_hat, y)
-
-            train_losses.append(loss.item())
-
+        train_losses.append(torch.mean(torch.tensor(epoch_train_losses)).item())
         val_losses.append(evaluate(model, loss_fn, loader, device=device))
 
         learning_rates.append(optimizer.param_groups[0]['lr'])
@@ -210,7 +213,7 @@ def main():
         parameter_labels=dataset.parameter_labels,
         parameter_ranges=[[0.08, 2.0], [0.9, 1.1], [0.05, 0.6], [-0.2, 0.], [np.exp(0.01), np.exp(2.)]], 
         parameter_values=[1., 1., 0.2, -0.1, np.exp(1.)],
-        n=100,
+        n=1000,
     )
 
 if __name__ == "__main__":
