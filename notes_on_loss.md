@@ -1,22 +1,41 @@
 
 ## Notes on the Loss
 
-Recall that when estimating the expectation of some $X$, written $m$, the TCL tells us that the empirical mean $\hat{m}_p = \frac{1}{p} \sum_{j=1}^p X_j$ converges in law : $\sqrt{p}(\hat{m}_p - m) \xrightarrow{d} \mathcal{N}(0, \sigma^2)$. 
+#### Justifying the Weighted MSE
 
-If the variance is unknown, we can estimate it using the unbiased variance estimator $\hat{\sigma}^2 = \frac{1}{p-1} \sum_{j=1}^p (X_j - \hat{m}_p)^2$, which, by the LGN and Slutsky's theorem, converges too : $\sqrt{p}\frac{(\hat{m}_p - m)}{\hat{\sigma}} \xrightarrow{d} \mathcal{N}(0, 1)$.
+Recall that provided we have observations $\set{X_j}_{j \in \set{1 \dots p}}$ we can estimate the expectation $m := \mathbb{E}[X]$ with the empirical mean $\hat{m} = \frac{1}{p} \sum_{j=1}^p X_j$. By the TCL this estimator converges in law : 
 
-Consider then having $\{X_j(\theta_i)\}$ where the law of $X$ depends on some parameter $\theta$ and write $m(\theta) = \mathbb{E}[X(\theta)]$. 
+$$\sqrt{p}(\hat{m} - m) \xrightarrow{d} \mathcal{N}(0, \sigma^2)$$ 
 
-With $p$ large, we can reasonably make the assumption $\hat{m} (\theta) \sim \mathcal{N}(m(\theta), \frac{\hat{\sigma}^2 (\theta)}{p})$.
+If the variance is unknown, we can estimate it using the (debiased) empirical variance $\hat{\sigma}^2 = \frac{1}{p-1} \sum_{j=1}^p (X_j - \hat{m})^2$, which - by the LGN, Slutsky's theorem, and the previous result - also converges in law : 
 
-Thus for $i \in \{1 \dots n\}$, the MLE is obtained by minimizing the negative log likelihood :
+$$\sqrt{p}\frac{(\hat{m} - m)}{\hat{\sigma}} \xrightarrow{d} \mathcal{N}(0, 1)$$
 
-$$l(\theta \vert \{\hat{m}(\theta), \hat{\sigma}(\theta)\}) = \sum_{i=1}^n \frac{(\hat{m}(\theta_i) - m(\theta_i))^2}{\hat{\sigma}^2(\theta_i) / p}$$
+Consider then having observations $\set{X_j(\theta_i)}_{j \in \set{1 \dots p}, i \in \set{i \dots q}}$ where the law of $X$ depends on some parameter $\theta$ modeled as a random variable. 
+
+Let us write $m(\theta) = \mathbb{E}[X(\theta)]$. **For $p$ large enough**, the previous result justifies the assumption
 
 
-Now to put this in context, we have a stochastic function $f$ and a dataset of parameters $\set{\theta_i}$, we want to learn $\theta \to \mathbb{E}[f(\theta)] =: m(\theta)$. To accomplish this we generate for each $\theta_i$, $p$ simulations $f(\theta_i)_j =: X_j(\theta_i)$ of which we take the empirical mean $\hat{m}(\theta_i)$ (that's just monte-carlo simulation) and unbiased variance estimator $\hat{\sigma}(\theta_i)^2$. We then train our neural network to approximate $\theta \to m(\theta)$ on the aforementionned criteria, which justifies this choice of weighted MSE.
+$$\sqrt{p}\frac{(\hat{m}(\theta) - m(\theta))}{\hat{\sigma}(\theta)} \sim \mathcal{N}(0, 1)$$
 
-There remains two potential issues : 
+Thus, **conditionned on $\set{\hat{m}(\theta), \hat{\sigma}(\theta)}$**, $m(\theta)$ can be supposed to follow a gaussian distribution with mean $\hat{m}(\theta)$ and variance $\frac{\hat{\sigma}(\theta)^2}{p}$. We can then express the conditional negative log likelyhood (without constant terms) as :
 
-- First, since $p$ is going to be large, $\sigma_i$ may be low ;
-- Second, we are doing option pricing here, do we really need to care about predictions being less than some distance $\epsilon$ to the true price ? Intuition says less than 0.01 (a cent) is unecessary, quick research says than it is for sensitivity analysis, ghost arbitrage, and batched bets (many contracts for a single prediction, which multiplies the error). The industry standard seems to be $10^{-6}$ but since we work with `float32` we'll stick to $10^{-4}$. 
+$$l(\theta \vert \hat{m}(\theta), \hat{\sigma}(\theta)) = \sum_{i=1}^q \frac{(\hat{m}(\theta_i) - m(\theta_i))^2}{\hat{\sigma}^2(\theta_i) / p}$$
+
+
+Now to put this in context, we have a stochastic function $f$ and a dataset of parameters $\set{\theta_i}$, we want to learn a parametric function $m_\phi$ (i.e. a neural network) to approximate $m : \theta \to \mathbb{E}[f(\theta)]$. 
+
+To accomplish this we generate, for each $\theta_i$, $p$ simulations $f(\theta_i)_j$ (the $X_j(\theta_i)$ in our previous explanation) of which we take the empirical mean $\hat{m}(\theta_i)$ (i.e. the monte-carlo simulation of $\mathbb{E}[f(\theta_i)]$) and empirical variance $\hat{\sigma}(\theta_i)^2$. 
+
+We can then train our neural network by gradient descent to minimize the aforementionned negative log likelihood (which is, in the end, a simple weighted MSE) :
+
+$$\operatorname{WMSE}(m_\phi(\theta_i), \hat{m}(\theta_i), \hat{\sigma}^2(\theta_i) / p) = \sum_{i=1}^q \frac{(\hat{m}(\theta_i) - m_\phi(\theta_i))^2}{\hat{\sigma}^2(\theta_i) / p}$$
+
+
+#### Conclusion and Going Further
+
+- The weighted MSE is not a default choice, but instead is justified as a proper Maximum Likelihood Estimation ;
+- Our only two hypothesis where "$p$ is large" - which it is at $2^7$ - and "conditionned on $\set{\hat{m}(\theta), \hat{\sigma}(\theta)}$" - which translates to "Assuming the MC estimate is the true parameter".
+
+- Since $p$ is indeed large, $\frac{\hat{\sigma_i}^2}{p}$ may be very low, which could at best explode our loss and thus our gradient at worse cause `NaNs` ; _We ough to similarly derive a proper loss to account for this "machine precision noise"_
+- Recall that we are modeling option pricing, do we really need to care about prediction precision under some $\epsilon$ ? Naively a precision under $10^{-2}$ (a cent) seem unecessary, however it is for sensitivity analysis, ghost arbitrage, and batched bets (many contracts depending on a single prediction, which multiplies the error by the number of contracts). The industry standard seems to be $10^{-6}$. Since we work with `float32` we'll stick to $10^{-4}$ in our evaluation metrics. 
